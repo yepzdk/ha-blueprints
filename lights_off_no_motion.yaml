@@ -1,0 +1,96 @@
+blueprint:
+  name: Sluk lys ved ingen bevægelse
+  source_url: https://github.com/yepzdk/ha-blueprints/blob/main/lights_off_no_motion.yaml
+  description: >
+    Venter på ingen bevægelse, dæmper lyset som advarsel, og slukker det derefter.
+    Hvis bevægelse opdages under advarselstiden, gendannes lysstyrken og cyklussen starter forfra.
+    Slukker ikke lys der allerede er slukket.
+  domain: automation
+  input:
+    motion_sensor:
+      name: Bevægelsessensor
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+    light_target:
+      name: Lys
+      description: >
+        Understøtter individuelle lys, lysgrupper og areas.
+      selector:
+        target:
+          entity:
+            domain: light
+    no_motion_wait:
+      name: Ventetid uden bevægelse
+      description: Tid uden bevægelse før lyset begynder at dæmpe.
+      default:
+        minutes: 30
+      selector:
+        duration:
+    grace_period:
+      name: Advarselstid (dæmpet)
+      description: Hvor længe lyset er dæmpet til 50% inden det slukkes helt.
+      default:
+        minutes: 2
+      selector:
+        duration:
+variables:
+  light_target: !input light_target
+triggers:
+  - trigger: state
+    entity_id: !input motion_sensor
+    to: "off"
+actions:
+  # Wait for motion to return, or timeout
+  - wait_for_trigger:
+      - trigger: state
+        entity_id: !input motion_sensor
+        to: "on"
+    timeout: !input no_motion_wait
+    continue_on_timeout: true
+  # Abort if motion came back
+  - condition: state
+    entity_id: !input motion_sensor
+    state: "off"
+  # Abort if all lights are already off
+  - condition: template
+    value_template: >
+      {% set entities = light_target.entity_id | default([]) %}
+      {% if entities is string %}{% set entities = [entities] %}{% endif %}
+      {{ entities | map('states') | select('eq', 'on') | list | count > 0 }}
+  # Grace period: dim to 50%
+  - action: light.turn_on
+    target: !input light_target
+    data:
+      brightness_pct: 50
+  # Wait during grace period, abort if motion returns
+  - wait_for_trigger:
+      - trigger: state
+        entity_id: !input motion_sensor
+        to: "on"
+    timeout: !input grace_period
+    continue_on_timeout: true
+  # If motion came back during grace period, restore brightness and stop
+  - if:
+      - condition: state
+        entity_id: !input motion_sensor
+        state: "on"
+    then:
+      - action: light.turn_on
+        target: !input light_target
+        data:
+          brightness_pct: 100
+      - stop: "Bevægelse opdaget under advarselstid – lysstyrke gendannet"
+  # Restore to 100% before turning off (so next manual on is full brightness)
+  - action: light.turn_on
+    target: !input light_target
+    data:
+      brightness_pct: 100
+  # Brief pause to let lights transition
+  - delay:
+      seconds: 1
+  # Turn off lights
+  - action: light.turn_off
+    target: !input light_target
+mode: restart
