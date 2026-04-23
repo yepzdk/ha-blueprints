@@ -1,0 +1,84 @@
+blueprint:
+  name: Spa API stale alert
+  source_url: https://github.com/yepzdk/ha-blueprints/blob/main/spa_api_stale_alert.yaml
+  description: >
+    Notifies when a spa integration's API has stopped returning fresh data,
+    while the spa itself is still online (indicating an integration-side
+    problem rather than a connectivity one). Optionally includes a
+    freshness-age sensor value in the message.
+  domain: automation
+  input:
+    api_stale_sensor:
+      name: API stale sensor
+      description: Binary sensor that is "on" when the integration API data is stale.
+      selector:
+        entity:
+          domain: binary_sensor
+    online_sensor:
+      name: Online sensor
+      description: Binary sensor indicating the spa itself is reachable.
+      selector:
+        entity:
+          domain: binary_sensor
+    minutes_since_update_sensor:
+      name: Minutes-since-update sensor (optional)
+      description: >
+        Sensor reporting how many minutes since the last API update.
+        Used as {minutes} placeholder in the message. Leave blank to omit.
+      default: ""
+      selector:
+        entity:
+          domain: sensor
+          multiple: false
+    stale_for:
+      name: Stale duration before alerting
+      description: How long the API-stale sensor must be "on" before notifying.
+      default:
+        minutes: 1
+      selector:
+        duration:
+    notify_service:
+      name: Notification service
+      description: Notification service (e.g. notify.mobile_app_pixel_7).
+      selector:
+        text:
+    notify_title:
+      name: Notification title
+      default: Spa
+      selector:
+        text:
+    alert_message:
+      name: Alert message
+      description: >
+        Placeholders: {minutes} (resolved to the value of
+        minutes-since-update sensor, or "?" if not configured).
+      default: "API has not updated for {minutes} min (spa is online - integration-side problem)"
+      selector:
+        text:
+variables:
+  minutes_since_update_sensor: !input minutes_since_update_sensor
+  notify_service: !input notify_service
+  notify_title: !input notify_title
+  alert_message: !input alert_message
+triggers:
+  - trigger: state
+    entity_id: !input api_stale_sensor
+    to: "on"
+    for: !input stale_for
+conditions:
+  - condition: state
+    entity_id: !input online_sensor
+    state: "on"
+actions:
+  - variables:
+      minutes: >-
+        {% if minutes_since_update_sensor | length > 0 %}
+          {{ states(minutes_since_update_sensor) }}
+        {% else %}
+          ?
+        {% endif %}
+  - action: "{{ notify_service }}"
+    data:
+      title: "{{ notify_title }}"
+      message: "{{ alert_message | replace('{minutes}', minutes | trim) }}"
+mode: single

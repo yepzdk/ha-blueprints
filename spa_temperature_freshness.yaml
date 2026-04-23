@@ -1,0 +1,146 @@
+blueprint:
+  name: Spa temperature freshness monitor
+  source_url: https://github.com/yepzdk/ha-blueprints/blob/main/spa_temperature_freshness.yaml
+  description: >
+    Monitors whether the spa temperature sensor is still reporting fresh data
+    and optionally wakes the spa up by briefly activating the jet pump.
+    Two independently toggleable behaviors:
+      1. Stale alert: notify when the temperature value has not changed for N
+         hours.
+      2. Force refresh: after M hours of the same value, briefly run the jet
+         pump to force the spa to publish new data.
+    Notifications are optional and language-agnostic.
+  domain: automation
+  input:
+    temperature_sensor:
+      name: Temperature sensor
+      description: The spa temperature sensor.
+      selector:
+        entity:
+          domain: sensor
+    pump_switch:
+      name: Jet pump switch
+      description: Switch used to briefly activate the jet pump and wake up the spa.
+      selector:
+        entity:
+          domain: switch
+    online_sensor:
+      name: Online sensor
+      description: Binary sensor indicating the spa is reachable.
+      selector:
+        entity:
+          domain: binary_sensor
+    enable_stale_alert:
+      name: Enable stale-temperature alert
+      default: true
+      selector:
+        boolean:
+    enable_force_refresh:
+      name: Enable jet-pump force refresh
+      default: true
+      selector:
+        boolean:
+    stale_duration:
+      name: Stale alert duration
+      description: How long the temperature must be unchanged before the alert fires.
+      default:
+        hours: 2
+      selector:
+        duration:
+    refresh_duration:
+      name: Force-refresh duration
+      description: >
+        How long the temperature must be unchanged before the jet pump is
+        triggered. Should normally be longer than the stale alert duration.
+      default:
+        hours: 4
+      selector:
+        duration:
+    pump_run_time:
+      name: Pump run time
+      description: How long to keep the jet pump on when refreshing.
+      default:
+        seconds: 30
+      selector:
+        duration:
+    notify_service:
+      name: Notification service
+      description: >
+        Notification service (e.g. notify.mobile_app_pixel_7).
+        Leave blank to disable notifications.
+      default: ""
+      selector:
+        text:
+    notify_title:
+      name: Notification title
+      default: Spa
+      selector:
+        text:
+    stale_message:
+      name: Stale-alert message
+      default: "Temperature has not been updated for the configured stale duration."
+      selector:
+        text:
+    refresh_message:
+      name: Force-refresh message
+      default: "Jet pump activated to refresh stale spa data."
+      selector:
+        text:
+variables:
+  enable_stale_alert: !input enable_stale_alert
+  enable_force_refresh: !input enable_force_refresh
+  notify_service: !input notify_service
+  notify_title: !input notify_title
+  stale_message: !input stale_message
+  refresh_message: !input refresh_message
+triggers:
+  - trigger: state
+    entity_id: !input temperature_sensor
+    for: !input stale_duration
+    id: stale
+  - trigger: state
+    entity_id: !input temperature_sensor
+    for: !input refresh_duration
+    id: refresh
+actions:
+  - choose:
+      # Stale alert: just notify
+      - conditions:
+          - condition: trigger
+            id: stale
+          - condition: template
+            value_template: "{{ enable_stale_alert }}"
+          - condition: template
+            value_template: "{{ notify_service | length > 0 }}"
+        sequence:
+          - action: "{{ notify_service }}"
+            data:
+              title: "{{ notify_title }}"
+              message: "{{ stale_message }}"
+
+      # Force refresh: requires the spa to be online, pulses the pump, notifies
+      - conditions:
+          - condition: trigger
+            id: refresh
+          - condition: template
+            value_template: "{{ enable_force_refresh }}"
+          - condition: state
+            entity_id: !input online_sensor
+            state: "on"
+        sequence:
+          - action: switch.turn_on
+            target:
+              entity_id: !input pump_switch
+          - delay: !input pump_run_time
+          - action: switch.turn_off
+            target:
+              entity_id: !input pump_switch
+          - if:
+              - condition: template
+                value_template: "{{ notify_service | length > 0 }}"
+            then:
+              - action: "{{ notify_service }}"
+                data:
+                  title: "{{ notify_title }}"
+                  message: "{{ refresh_message }}"
+mode: single

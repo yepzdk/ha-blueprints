@@ -1,0 +1,258 @@
+blueprint:
+  name: Spa heater mode control
+  source_url: https://github.com/yepzdk/ha-blueprints/blob/main/spa_heater_mode.yaml
+  description: >
+    Controls a ControlMySpa-style heater mode select based on electricity price
+    and an optional force-heating toggle. Bundles four concerns — all optional
+    via toggles:
+      1. Switch to READY when a cheap electricity hour starts; REST when it ends.
+      2. Force READY while a force-heating input_boolean is on; re-evaluate when off.
+      3. Watchdog: correct the select immediately if it ends up in READY_REST
+         (cloud resets occasionally cause this on some spas).
+      4. Periodic assertion: every N minutes, verify the mode matches the
+         expected state and correct it if it drifted.
+    Decision rule: READY when force_heating is on OR a cheap hour is active,
+    otherwise REST. Notifications are optional and fully templatable for any
+    language.
+  domain: automation
+  input:
+    heater_mode_select:
+      name: Heater mode select
+      description: The spa's heater mode select entity (expected options include READY, REST, READY_REST).
+      selector:
+        entity:
+          domain: select
+    cheap_hour_sensor:
+      name: Cheap electricity hour sensor
+      description: Binary sensor that is "on" during cheap electricity hours.
+      selector:
+        entity:
+          domain: binary_sensor
+    force_heating_boolean:
+      name: Force heating toggle
+      description: input_boolean that forces READY mode regardless of price when on.
+      selector:
+        entity:
+          domain: input_boolean
+    online_sensor:
+      name: Online sensor
+      description: Binary sensor indicating the spa is reachable. Used to gate all actions.
+      selector:
+        entity:
+          domain: binary_sensor
+    enable_price_control:
+      name: Enable price-based mode switching
+      description: React to cheap_hour_sensor transitions.
+      default: true
+      selector:
+        boolean:
+    enable_force_override:
+      name: Enable force-heating override
+      description: React to the force_heating toggle transitions.
+      default: true
+      selector:
+        boolean:
+    enable_watchdog:
+      name: Enable READY_REST watchdog
+      description: Immediately correct the mode if it changes to READY_REST unexpectedly.
+      default: true
+      selector:
+        boolean:
+    enable_periodic_assert:
+      name: Enable periodic assertion
+      description: Periodically verify and correct the heater mode.
+      default: true
+      selector:
+        boolean:
+    assert_interval_minutes:
+      name: Assertion interval (minutes)
+      description: How often the periodic assertion runs.
+      default: 15
+      selector:
+        number:
+          min: 1
+          max: 120
+          unit_of_measurement: min
+          mode: box
+    notify_service:
+      name: Notification service
+      description: >
+        Notification service to call for watchdog and assertion corrections
+        (e.g. notify.mobile_app_pixel_7). Leave blank to disable notifications.
+      default: ""
+      selector:
+        text:
+    notify_title:
+      name: Notification title
+      default: Spa
+      selector:
+        text:
+    watchdog_message:
+      name: Watchdog notification message
+      description: >
+        Sent when READY_REST is corrected. Placeholders: {expected}.
+      default: "Spa unexpectedly switched to READY_REST - corrected to {expected}"
+      selector:
+        text:
+    assert_message:
+      name: Assertion notification message
+      description: >
+        Sent when periodic assertion corrects a drifted mode.
+        Placeholders: {current}, {expected}.
+      default: "Spa mode corrected: {current} -> {expected}"
+      selector:
+        text:
+variables:
+  enable_price_control: !input enable_price_control
+  enable_force_override: !input enable_force_override
+  enable_watchdog: !input enable_watchdog
+  enable_periodic_assert: !input enable_periodic_assert
+  force_heating_boolean: !input force_heating_boolean
+  cheap_hour_sensor: !input cheap_hour_sensor
+  heater_mode_select: !input heater_mode_select
+  notify_service: !input notify_service
+  notify_title: !input notify_title
+  watchdog_message: !input watchdog_message
+  assert_message: !input assert_message
+triggers:
+  - trigger: state
+    entity_id: !input cheap_hour_sensor
+    to: "on"
+    id: cheap_on
+  - trigger: state
+    entity_id: !input cheap_hour_sensor
+    to: "off"
+    id: cheap_off
+  - trigger: state
+    entity_id: !input force_heating_boolean
+    to: "on"
+    id: force_on
+  - trigger: state
+    entity_id: !input force_heating_boolean
+    to: "off"
+    id: force_off
+  - trigger: state
+    entity_id: !input heater_mode_select
+    to: READY_REST
+    id: watchdog
+  - trigger: time_pattern
+    minutes: !input assert_interval_minutes
+    id: assert
+conditions:
+  - condition: state
+    entity_id: !input online_sensor
+    state: "on"
+actions:
+  - variables:
+      expected: >-
+        {% if is_state(force_heating_boolean, 'on') -%}
+        READY
+        {%- elif is_state(cheap_hour_sensor, 'on') -%}
+        READY
+        {%- else -%}
+        REST
+        {%- endif %}
+      current: "{{ states(heater_mode_select) }}"
+  - choose:
+      # Cheap hour started: go READY if price control is enabled
+      - conditions:
+          - condition: trigger
+            id: cheap_on
+          - condition: template
+            value_template: "{{ enable_price_control }}"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: !input heater_mode_select
+            data:
+              option: READY
+
+      # Cheap hour ended: go REST unless force is on (and price control enabled)
+      - conditions:
+          - condition: trigger
+            id: cheap_off
+          - condition: template
+            value_template: "{{ enable_price_control }}"
+          - condition: state
+            entity_id: !input force_heating_boolean
+            state: "off"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: !input heater_mode_select
+            data:
+              option: REST
+
+      # Force heating turned on: always READY
+      - conditions:
+          - condition: trigger
+            id: force_on
+          - condition: template
+            value_template: "{{ enable_force_override }}"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: !input heater_mode_select
+            data:
+              option: READY
+
+      # Force heating turned off: re-evaluate based on price
+      - conditions:
+          - condition: trigger
+            id: force_off
+          - condition: template
+            value_template: "{{ enable_force_override }}"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: !input heater_mode_select
+            data:
+              option: "{{ expected }}"
+
+      # Watchdog: unexpected READY_REST detected, correct and notify
+      - conditions:
+          - condition: trigger
+            id: watchdog
+          - condition: template
+            value_template: "{{ enable_watchdog }}"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: !input heater_mode_select
+            data:
+              option: "{{ expected }}"
+          - if:
+              - condition: template
+                value_template: "{{ notify_service | length > 0 }}"
+            then:
+              - action: "{{ notify_service }}"
+                data:
+                  title: "{{ notify_title }}"
+                  message: "{{ watchdog_message | replace('{expected}', expected) }}"
+
+      # Periodic assertion: correct drift and notify if mode changed
+      - conditions:
+          - condition: trigger
+            id: assert
+          - condition: template
+            value_template: "{{ enable_periodic_assert }}"
+          - condition: template
+            value_template: "{{ current != expected }}"
+        sequence:
+          - action: select.select_option
+            target:
+              entity_id: !input heater_mode_select
+            data:
+              option: "{{ expected }}"
+          - if:
+              - condition: template
+                value_template: "{{ notify_service | length > 0 }}"
+            then:
+              - action: "{{ notify_service }}"
+                data:
+                  title: "{{ notify_title }}"
+                  message: >-
+                    {{ assert_message
+                       | replace('{current}', current)
+                       | replace('{expected}', expected) }}
+mode: single
