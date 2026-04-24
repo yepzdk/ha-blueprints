@@ -13,3 +13,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `spa_time_sync.yaml` — blueprint for daily spa clock drift check and resync.
 - `spa_api_stale_alert.yaml` — blueprint for alerting when the spa integration's API stops returning fresh data while the spa is still online.
 - README list of available blueprints.
+- README Prerequisites section documenting external dependencies (ControlMySpa integration, price sensor, helpers, template sensors for API staleness, notify target) with example YAML.
