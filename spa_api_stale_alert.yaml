@@ -6,6 +6,10 @@ blueprint:
     while the spa itself is still online (indicating an integration-side
     problem rather than a connectivity one). Optionally includes a
     freshness-age sensor value in the message.
+
+    Unlike the other spa blueprints, this one always notifies — silencing
+    its alert would defeat its purpose. The notify_service input takes a
+    service id like notify.mobile_app_pixel_7, not a friendly name.
   domain: automation
   input:
     api_stale_sensor:
@@ -23,13 +27,13 @@ blueprint:
     minutes_since_update_sensor:
       name: Minutes-since-update sensor (optional)
       description: >
-        Sensor reporting how many minutes since the last API update.
-        Used as {minutes} placeholder in the message. Leave blank to omit.
+        Entity ID of a sensor reporting minutes since the last API update
+        (e.g. sensor.spa_api_minutes_since_update).
+        Used as {minutes} placeholder in the message.
+        Leave blank to render "?" in its place.
       default: ""
       selector:
-        entity:
-          domain: sensor
-          multiple: false
+        text:
     stale_for:
       name: Stale duration before alerting
       description: How long the API-stale sensor must be "on" before notifying.
@@ -39,7 +43,9 @@ blueprint:
         duration:
     notify_service:
       name: Notification service
-      description: Notification service (e.g. notify.mobile_app_pixel_7).
+      description: >
+        Notification service id (e.g. notify.mobile_app_pixel_7).
+        This is the service id, not a friendly device name.
       selector:
         text:
     notify_title:

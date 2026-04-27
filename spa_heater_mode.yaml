@@ -9,11 +9,21 @@ blueprint:
       2. Force READY while a force-heating input_boolean is on; re-evaluate when off.
       3. Watchdog: correct the select immediately if it ends up in READY_REST
          (cloud resets occasionally cause this on some spas).
-      4. Periodic assertion: every N minutes, verify the mode matches the
-         expected state and correct it if it drifted.
+      4. Periodic assertion: at a configurable cron-style interval, verify the
+         mode matches the expected state and correct it if it drifted.
     Decision rule: READY when force_heating is on OR a cheap hour is active,
-    otherwise REST. Notifications are optional and fully templatable for any
-    language.
+    otherwise REST.
+
+    Hardcoded literals: this blueprint targets selects whose options are exactly
+    "READY", "REST" and "READY_REST" (ControlMySpa convention). If your select
+    uses different option names, fork the blueprint and rename them — they are
+    not exposed as inputs.
+
+    Notifications are optional and per-event opt-in (default off). The
+    notify_service input takes a service id like notify.mobile_app_pixel_7 —
+    not a friendly name. Message templates resolve {placeholder} tokens via
+    Jinja replace(); literal "{" characters in custom messages will break
+    substitution.
   domain: automation
   input:
     heater_mode_select:
@@ -64,21 +74,22 @@ blueprint:
       default: true
       selector:
         boolean:
-    assert_interval_minutes:
-      name: Assertion interval (minutes)
-      description: How often the periodic assertion runs.
-      default: 15
+    assert_interval:
+      name: Assertion interval (cron-style minutes)
+      description: >
+        Cron-style minutes pattern for the periodic assertion trigger.
+        Use "/N" to run every N minutes (e.g. "/15", "/5"), or a comma list
+        like "0,15,30,45" for specific minutes. A bare number such as "15"
+        runs only once per hour at minute 15 — almost never what you want.
+      default: "/15"
       selector:
-        number:
-          min: 1
-          max: 120
-          unit_of_measurement: min
-          mode: box
+        text:
     notify_service:
       name: Notification service
       description: >
-        Notification service to call for watchdog and assertion corrections
-        (e.g. notify.mobile_app_pixel_7). Leave blank to disable notifications.
+        Notification service id to call (e.g. notify.mobile_app_pixel_7).
+        This is the service id, not a friendly device name.
+        Leave blank to disable all notifications from this blueprint.
       default: ""
       selector:
         text:
@@ -87,6 +98,18 @@ blueprint:
       default: Spa
       selector:
         text:
+    notify_on_watchdog:
+      name: Notify on watchdog correction
+      description: Send a notification when the watchdog corrects an unexpected READY_REST.
+      default: false
+      selector:
+        boolean:
+    notify_on_assert_correction:
+      name: Notify on periodic correction
+      description: Send a notification when periodic assertion corrects a drifted mode.
+      default: false
+      selector:
+        boolean:
     watchdog_message:
       name: Watchdog notification message
       description: >
@@ -103,15 +126,13 @@ blueprint:
       selector:
         text:
 variables:
-  enable_price_control: !input enable_price_control
-  enable_force_override: !input enable_force_override
-  enable_watchdog: !input enable_watchdog
-  enable_periodic_assert: !input enable_periodic_assert
   force_heating_boolean: !input force_heating_boolean
   cheap_hour_sensor: !input cheap_hour_sensor
   heater_mode_select: !input heater_mode_select
   notify_service: !input notify_service
   notify_title: !input notify_title
+  notify_on_watchdog: !input notify_on_watchdog
+  notify_on_assert_correction: !input notify_on_assert_correction
   watchdog_message: !input watchdog_message
   assert_message: !input assert_message
 triggers:
@@ -119,25 +140,31 @@ triggers:
     entity_id: !input cheap_hour_sensor
     to: "on"
     id: cheap_on
+    enabled: !input enable_price_control
   - trigger: state
     entity_id: !input cheap_hour_sensor
     to: "off"
     id: cheap_off
+    enabled: !input enable_price_control
   - trigger: state
     entity_id: !input force_heating_boolean
     to: "on"
     id: force_on
+    enabled: !input enable_force_override
   - trigger: state
     entity_id: !input force_heating_boolean
     to: "off"
     id: force_off
+    enabled: !input enable_force_override
   - trigger: state
     entity_id: !input heater_mode_select
     to: READY_REST
     id: watchdog
+    enabled: !input enable_watchdog
   - trigger: time_pattern
-    minutes: !input assert_interval_minutes
+    minutes: !input assert_interval
     id: assert
+    enabled: !input enable_periodic_assert
 conditions:
   - condition: state
     entity_id: !input online_sensor
@@ -154,12 +181,10 @@ actions:
         {%- endif %}
       current: "{{ states(heater_mode_select) }}"
   - choose:
-      # Cheap hour started: go READY if price control is enabled
+      # Cheap hour started: go READY
       - conditions:
           - condition: trigger
             id: cheap_on
-          - condition: template
-            value_template: "{{ enable_price_control }}"
         sequence:
           - action: select.select_option
             target:
@@ -167,12 +192,10 @@ actions:
             data:
               option: READY
 
-      # Cheap hour ended: go REST unless force is on (and price control enabled)
+      # Cheap hour ended: go REST unless force is on
       - conditions:
           - condition: trigger
             id: cheap_off
-          - condition: template
-            value_template: "{{ enable_price_control }}"
           - condition: state
             entity_id: !input force_heating_boolean
             state: "off"
@@ -187,8 +210,6 @@ actions:
       - conditions:
           - condition: trigger
             id: force_on
-          - condition: template
-            value_template: "{{ enable_force_override }}"
         sequence:
           - action: select.select_option
             target:
@@ -200,8 +221,6 @@ actions:
       - conditions:
           - condition: trigger
             id: force_off
-          - condition: template
-            value_template: "{{ enable_force_override }}"
         sequence:
           - action: select.select_option
             target:
@@ -209,12 +228,10 @@ actions:
             data:
               option: "{{ expected }}"
 
-      # Watchdog: unexpected READY_REST detected, correct and notify
+      # Watchdog: unexpected READY_REST detected, correct and optionally notify
       - conditions:
           - condition: trigger
             id: watchdog
-          - condition: template
-            value_template: "{{ enable_watchdog }}"
         sequence:
           - action: select.select_option
             target:
@@ -223,19 +240,17 @@ actions:
               option: "{{ expected }}"
           - if:
               - condition: template
-                value_template: "{{ notify_service | length > 0 }}"
+                value_template: "{{ notify_on_watchdog and notify_service | length > 0 }}"
             then:
               - action: "{{ notify_service }}"
                 data:
                   title: "{{ notify_title }}"
                   message: "{{ watchdog_message | replace('{expected}', expected) }}"
 
-      # Periodic assertion: correct drift and notify if mode changed
+      # Periodic assertion: correct drift and optionally notify
       - conditions:
           - condition: trigger
             id: assert
-          - condition: template
-            value_template: "{{ enable_periodic_assert }}"
           - condition: template
             value_template: "{{ current != expected }}"
         sequence:
@@ -246,7 +261,7 @@ actions:
               option: "{{ expected }}"
           - if:
               - condition: template
-                value_template: "{{ notify_service | length > 0 }}"
+                value_template: "{{ notify_on_assert_correction and notify_service | length > 0 }}"
             then:
               - action: "{{ notify_service }}"
                 data:
@@ -255,4 +270,5 @@ actions:
                     {{ assert_message
                        | replace('{current}', current)
                        | replace('{expected}', expected) }}
-mode: single
+mode: queued
+max: 3

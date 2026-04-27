@@ -7,6 +7,9 @@ blueprint:
     "update time" button, dismiss any leftover persistent notification from
     the integration, and send an optional confirmation notification.
     Handles DST transitions and RTC drift.
+
+    The notify_service input takes a service id like notify.mobile_app_pixel_7
+    — not a friendly name. Notifications are opt-in (default off).
   domain: automation
   input:
     sync_time:
@@ -47,16 +50,18 @@ blueprint:
       name: Persistent notification ID to dismiss
       description: >
         ID of a persistent notification to dismiss after pressing the button
-        (some integrations raise one on time-update).
+        (some integrations raise one on time-update; ControlMySpa uses the ID
+        "control_my_spa_time_update", for example).
         Leave blank to skip dismissal.
-      default: "control_my_spa_time_update"
+      default: ""
       selector:
         text:
     notify_service:
       name: Notification service
       description: >
-        Notification service (e.g. notify.mobile_app_pixel_7).
-        Leave blank to disable notifications.
+        Notification service id (e.g. notify.mobile_app_pixel_7).
+        This is the service id, not a friendly device name.
+        Leave blank to disable all notifications from this blueprint.
       default: ""
       selector:
         text:
@@ -65,6 +70,12 @@ blueprint:
       default: Spa
       selector:
         text:
+    notify_on_sync:
+      name: Notify on time sync
+      description: Send a notification after a successful time sync.
+      default: false
+      selector:
+        boolean:
     sync_message:
       name: Sync notification message
       description: >
@@ -78,6 +89,7 @@ variables:
   dismiss_notification_id: !input dismiss_notification_id
   notify_service: !input notify_service
   notify_title: !input notify_title
+  notify_on_sync: !input notify_on_sync
   sync_message: !input sync_message
 triggers:
   - trigger: time
@@ -116,7 +128,7 @@ actions:
           notification_id: "{{ dismiss_notification_id }}"
   - if:
       - condition: template
-        value_template: "{{ notify_service | length > 0 }}"
+        value_template: "{{ notify_on_sync and notify_service | length > 0 }}"
     then:
       - action: "{{ notify_service }}"
         data:
