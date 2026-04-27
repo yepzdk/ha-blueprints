@@ -1,0 +1,140 @@
+blueprint:
+  name: Spa daily time sync
+  source_url: https://github.com/yepzdk/ha-blueprints/blob/main/spa_time_sync.yaml
+  description: >
+    Once per day, compare the spa's reported clock to Home Assistant's local
+    time. If they drift beyond the configured threshold, press the spa's
+    "update time" button, dismiss any leftover persistent notification from
+    the integration, and send an optional confirmation notification.
+    Handles DST transitions and RTC drift.
+
+    The notify_service input takes a service id like notify.mobile_app_pixel_7
+    — not a friendly name. Notifications are opt-in (default off).
+  domain: automation
+  input:
+    sync_time:
+      name: Daily sync time
+      description: Local time at which the drift check runs.
+      default: "03:30:00"
+      selector:
+        time:
+    clock_sensor:
+      name: Spa clock sensor
+      description: Sensor that reports the spa's clock as HH:MM.
+      selector:
+        entity:
+          domain: sensor
+    update_time_button:
+      name: Update-time button
+      description: The button provided by the spa integration to push HA time to the spa.
+      selector:
+        entity:
+          domain: button
+    online_sensor:
+      name: Online sensor
+      description: Binary sensor indicating the spa is reachable.
+      selector:
+        entity:
+          domain: binary_sensor
+    drift_threshold_minutes:
+      name: Drift threshold (minutes)
+      description: Only sync if the drift exceeds this many minutes.
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+          mode: box
+    dismiss_notification_id:
+      name: Persistent notification ID to dismiss
+      description: >
+        ID of a persistent notification to dismiss after pressing the button
+        (some integrations raise one on time-update; ControlMySpa uses the ID
+        "control_my_spa_time_update", for example).
+        Leave blank to skip dismissal.
+      default: ""
+      selector:
+        text:
+    notify_service:
+      name: Notification service
+      description: >
+        Notification service id (e.g. notify.mobile_app_pixel_7).
+        This is the service id, not a friendly device name.
+        Leave blank to disable all notifications from this blueprint.
+      default: ""
+      selector:
+        text:
+    notify_title:
+      name: Notification title
+      default: Spa
+      selector:
+        text:
+    notify_on_sync:
+      name: Notify on time sync
+      description: Send a notification after a successful time sync.
+      default: false
+      selector:
+        boolean:
+    sync_message:
+      name: Sync notification message
+      description: >
+        Placeholders: {spa_time}, {ha_time}.
+      default: "Spa clock synced ({spa_time} -> {ha_time})"
+      selector:
+        text:
+variables:
+  clock_sensor: !input clock_sensor
+  drift_threshold_minutes: !input drift_threshold_minutes
+  dismiss_notification_id: !input dismiss_notification_id
+  notify_service: !input notify_service
+  notify_title: !input notify_title
+  notify_on_sync: !input notify_on_sync
+  sync_message: !input sync_message
+triggers:
+  - trigger: time
+    at: !input sync_time
+conditions:
+  - condition: state
+    entity_id: !input online_sensor
+    state: "on"
+  - condition: template
+    value_template: >-
+      {% set spa = states(clock_sensor) %}
+      {% if spa in ['unknown', 'unavailable', 'none', None] %}
+        false
+      {% else %}
+        {% set spa_parts = spa.split(':') %}
+        {% set spa_min = spa_parts[0] | int * 60 + spa_parts[1] | int %}
+        {% set ha_min = now().hour * 60 + now().minute %}
+        {% set diff = ((spa_min - ha_min) + 720) % 1440 - 720 %}
+        {{ diff | abs > (drift_threshold_minutes | int) }}
+      {% endif %}
+actions:
+  - variables:
+      spa_time: "{{ states(clock_sensor) }}"
+      ha_time: "{{ now().strftime('%H:%M') }}"
+  - action: button.press
+    target:
+      entity_id: !input update_time_button
+  - delay:
+      seconds: 10
+  - if:
+      - condition: template
+        value_template: "{{ dismiss_notification_id | length > 0 }}"
+    then:
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: "{{ dismiss_notification_id }}"
+  - if:
+      - condition: template
+        value_template: "{{ notify_on_sync and notify_service | length > 0 }}"
+    then:
+      - action: "{{ notify_service }}"
+        data:
+          title: "{{ notify_title }}"
+          message: >-
+            {{ sync_message
+               | replace('{spa_time}', spa_time)
+               | replace('{ha_time}', ha_time) }}
+mode: single
